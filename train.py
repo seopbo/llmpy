@@ -133,11 +133,11 @@ def main():
             else:
                 train_steps += 1
                 mb_train_outputs.loss.backward()
-                mb_train_loss += mb_train_outputs.loss.item()
                 clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
+                mb_train_loss += mb_train_outputs.loss.item()
                 pbar.update()
 
             if args.torch_empty_cache_every_steps:
