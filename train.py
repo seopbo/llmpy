@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 
 import torch
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.checkpoint import checkpoint
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -18,11 +19,11 @@ from datasets import load_dataset
 def get_args():
     parser = ArgumentParser()
     parser.add_argument("--data_dirpath", type=str, default="/data/nick_722/workspace/llmpy/datasets")
-    parser.add_argument("--save_dirpath", type=str, default="/data/nick_722/workspace/llmpy/checkpoints/single")
+    parser.add_argument("--save_dirpath", type=str, default="/data/nick_722/workspace/llmpy/checkpoints/base")
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
-        default="/data/lm-old_project_language-model_732/rw/lmt/checkpoints/hf/meta-llama-3.2-1b",
+        default="/data/nick_722/hf_assets/llama-3.2-1b-instruct",
     )
     parser.add_argument("--per_device_train_batch_size", type=int, default=2)
     parser.add_argument("--per_device_eval_batch_size", type=int, default=2)
@@ -34,6 +35,7 @@ def get_args():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--min_lr", type=float, default=3e-5)
     parser.add_argument("--wd", type=float, default=1e-1)
+    parser.add_argument("--max_grad_norm", type=float, default=0.1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--torch_empty_cache_every_steps", action="store_true")
@@ -121,7 +123,9 @@ def main():
                 mb_train_outputs.loss.backward()
                 mb_train_loss += mb_train_outputs.loss.item()
                 train_steps += 1 / args.gradient_accumulation_steps
+
                 if (mb_train_index + 1) % args.gradient_accumulation_steps == 0:
+                    clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
@@ -130,6 +134,7 @@ def main():
                 train_steps += 1
                 mb_train_outputs.loss.backward()
                 mb_train_loss += mb_train_outputs.loss.item()
+                clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
