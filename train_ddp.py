@@ -23,11 +23,6 @@ from transformers.optimization import AdamW, get_cosine_with_min_lr_schedule_wit
 from datasets import load_dataset
 
 
-def print_peak_memory(prefix):
-    if dist.get_rank() == 0:
-        print(f"{prefix}: {torch.cuda.max_memory_allocated(0) // 1e6}MB ")
-
-
 def get_args():
     parser = ArgumentParser()
     parser.add_argument("--data_dirpath", type=str, default="/data/nick_722/workspace/llmpy/datasets")
@@ -56,12 +51,16 @@ def get_args():
     return args
 
 
-def ddp_setup():
+def setup():
     init_process_group(backend="nccl")
 
 
+def cleanup():
+    destroy_process_group()
+
+
 def main():
-    ddp_setup()
+    setup()
     rank = dist.get_rank()
     args = get_args()
 
@@ -233,7 +232,7 @@ def main():
             if train_steps == args.training_steps:
                 break
 
-    destroy_process_group()
+    cleanup()
 
 
 if __name__ == "__main__":
