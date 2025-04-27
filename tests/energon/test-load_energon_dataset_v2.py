@@ -1,3 +1,4 @@
+import time
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from typing import List
@@ -9,7 +10,6 @@ from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 
-# Typing for the resulting batch data
 @dataclass
 class LanguageModelingSample:
     # (l,)
@@ -30,7 +30,7 @@ class LanguageModelingBatch:
 
 
 # All the typing is optional
-class LanguageModelingTaskEncoder(
+class LanguageModelingTaskEncoderV2(
     DefaultTaskEncoder[
         TextSample,
         LanguageModelingSample,
@@ -54,18 +54,22 @@ class LanguageModelingTaskEncoder(
         self._reset_attention_mask = reset_attention_mask
         self._buffer = []
 
-    def encode_sample(self, sample: TextSample) -> LanguageModelingSample:
-        output = self._tokenizer(
-            sample.text, add_special_tokens=False, return_attention_mask=False
-        )
-        return LanguageModelingSample(input_ids=output["input_ids"])
+    def encode_sample(self, sample: TextSample) -> TextSample:
+        return sample
 
     def select_samples_to_pack(
-        self, samples: List[LanguageModelingSample]
+        self, samples: List[TextSample]
     ) -> List[List[LanguageModelingSample]]:
+        list_of_texts = [sample.text for sample in samples]
+        outputs = self._tokenizer(
+            list_of_texts, add_special_tokens=False, return_attention_mask=False
+        )
+        list_of_input_ids = outputs["input_ids"]
+
         groups = []
-        for sample in samples:
-            input_ids = sample.input_ids + [self._tokenizer.eos_token_id]
+
+        for input_ids in list_of_input_ids:
+            input_ids += [self._tokenizer.eos_token_id]
             self._buffer.extend(input_ids)
 
             while len(self._buffer) >= self._max_length:
@@ -124,7 +128,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(
         args.pretrained_tokenizer_model_name_or_path
     )
-    task_encoder = LanguageModelingTaskEncoder(
+    task_encoder = LanguageModelingTaskEncoderV2(
         tokenizer,
         max_length=args.max_sequence_length,
         reset_attention_mask=args.reset_attention_mask,
@@ -140,11 +144,17 @@ def main():
         task_encoder=task_encoder,
     )
     train_dl = get_loader(train_ds)
-    batch = next(iter(train_dl))
 
-    print(batch.input_ids)
-    print(batch.attention_mask)
-    print((batch.attention_mask != tokenizer.eos_token_id).sum(axis=-1))
+    start_time = time.time()
+    for idx, batch in enumerate(train_dl):
+        print(idx)
+        print(batch.input_ids, batch.input_ids.size())
+        print(batch.attention_mask, batch.attention_mask.size())
+
+        if idx == 100:
+            break
+    end_time = time.time()
+    print(f"elapsed time: {end_time - start_time}")
 
 
 if __name__ == "__main__":
