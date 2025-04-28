@@ -1,14 +1,22 @@
-# https://github.com/pytorch/examples/blob/main/distributed/ddp-tutorial-series/multigpu_torchrun.py
-# https://nbviewer.org/github/tunib-ai/large-scale-lm-tutorials/blob/main/notebooks/03_distributed_programming.ipynb
+# https://pytorch.org/tutorials/intermediate/FSDP_tutorial.html
+# https://pytorch.org/tutorials/intermediate/FSDP_advanced_tutorial.html
+# https://github.com/pytorch/examples/tree/main/distributed/FSDP/
+# ref: https://github.com/pytorch/examples/blob/main/distributed/FSDP/T5_training.py
 from argparse import ArgumentParser
 
 import torch
 import torch.distributed as dist
+from datasets import load_dataset
 from torch.distributed import destroy_process_group, init_process_group
-from torch.distributed.optim import ZeroRedundancyOptimizer
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.nn.utils import clip_grad_norm_
-from torch.utils.checkpoint import checkpoint
+from torch.distributed.fsdp import (
+    BackwardPrefetch,
+    FullStateDictConfig,
+)
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import (
+    ShardingStrategy,
+    StateDictType,
+)
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
@@ -20,13 +28,13 @@ from transformers import (
 )
 from transformers.optimization import AdamW, get_cosine_with_min_lr_schedule_with_warmup
 
-from datasets import load_dataset
+import fsdp_policies
 
 
 def get_args():
     parser = ArgumentParser()
     parser.add_argument("--data_dirpath", type=str, default="/data/nick_722/workspace/llmpy/datasets")
-    parser.add_argument("--save_dirpath", type=str, default="/data/nick_722/workspace/llmpy/checkpoints/ddp")
+    parser.add_argument("--save_dirpath", type=str, default="/data/nick_722/workspace/llmpy/checkpoints/fsdp")
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str,
@@ -45,10 +53,22 @@ def get_args():
     parser.add_argument("--max_grad_norm", type=float, default=0.1)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--gradient_checkpointing", action="store_true")
-    parser.add_argument("--shard_op", action="store_true")
+    parser.add_argument("--sharding_strategy", type=str, choices=["zero2", "zero3"], default="zero3")
     parser.add_argument("--torch_empty_cache_every_steps", action="store_true")
     args = parser.parse_args()
     return args
+
+
+# @dataclass
+# class fsdp_config:
+#     mixed_precision: bool=True
+#     use_fp16: bool=False
+#     seed: int=42
+#     fsdp_activation_checkpointing: bool=False
+#     limit_all_gathers: bool=True
+#     sharding_strategy: ShardingStrategy = ShardingStrategy.FULL_SHARD #HYBRID_SHARD, SHARD_GRAD_OP
+#     checkpoint_type: StateDictType = StateDictType.FULL_STATE_DICT # alternatively can use SHARDED_STATE_DICT to avoid OOMs
+#     save_optimizer: bool=False
 
 
 def setup():
@@ -78,32 +98,23 @@ def main():
 
     config = AutoConfig.from_pretrained(args.pretrained_model_name_or_path)
     model = AutoModelForCausalLM.from_config(config, torch_dtype=torch.bfloat16)
-    # model = AutoModelForCausalLM.from_pretrained(args.pretrained_model_name_or_path, torch_dtype=torch.bfloat16)
-    model.to(rank)
-    torch.cuda.empty_cache()
+    mixed_precision_policy = fsdp_policies.bfSixteen
+    llama_auto_wrap_policy = fsdp_policies.get_llama_wrapper()
 
-    if args.gradient_checkpointing:
+    if args.sharding_strategy == "zero2":
+        sharding_strategy = ShardingStrategy.SHARD_GRAD_OP
+    elif args.sharding_strategy == "zero3":
+        sharding_strategy = ShardingStrategy.FULL_SHARD
 
-        def apply_checkpoint(module):
-            orig_forward = module.forward
-
-            def wrapped_forward(*inputs, **kwargs):
-                def custom_forward(*inputs):
-                    return orig_forward(*inputs, **kwargs)
-
-                return checkpoint(custom_forward, *inputs, use_reentrant=False)
-
-            module.forward = wrapped_forward
-
-        for layer in model.model.layers:
-            apply_checkpoint(layer.self_attn)
-
-    model = DDP(
+    model = FSDP(
         model,
-        device_ids=[rank],
-        gradient_as_bucket_view=False,
-        static_graph=True if args.gradient_checkpointing else False,
+        auto_wrap_policy=llama_auto_wrap_policy,
+        mixed_precision=mixed_precision_policy,
+        sharding_strategy=sharding_strategy,
+        device_id=rank,
     )
+    if args.gradient_checkpointing:
+        fsdp_policies.apply_fsdp_checkpointing(model)
 
     train_dl = DataLoader(
         train_ds,
@@ -113,23 +124,14 @@ def main():
         collate_fn=collate_fn,
         sampler=DistributedSampler(train_ds),
     )
-    if args.shard_op:
-        optimizer = ZeroRedundancyOptimizer(
-            params=model.parameters(),
-            optimizer_class=AdamW,
-            lr=args.lr,
-            betas=(0.9, 0.95),
-            eps=1e-8,
-            weight_decay=args.wd,
-        )
-    else:
-        optimizer = AdamW(
-            params=model.parameters(),
-            lr=args.lr,
-            betas=(0.9, 0.95),
-            eps=1e-8,
-            weight_decay=args.wd,
-        )
+
+    optimizer = AdamW(
+        params=model.parameters(),
+        lr=args.lr,
+        betas=(0.9, 0.95),
+        eps=1e-8,
+        weight_decay=args.wd,
+    )
 
     estimated_batch_size = args.per_device_train_batch_size * args.gradient_accumulation_steps
     _training_steps = len(train_dl.dataset) // estimated_batch_size
@@ -154,8 +156,7 @@ def main():
             mb_train_output_ids = train_mb["labels"].to(rank)
             mb_train_loss = 0
 
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                mb_train_outputs = model(input_ids=mb_train_input_ids, labels=mb_train_output_ids, use_cache=False)
+            mb_train_outputs = model(input_ids=mb_train_input_ids, labels=mb_train_output_ids, use_cache=False)
 
             if args.gradient_accumulation_steps > 1:
                 mb_train_outputs.loss /= args.gradient_accumulation_steps
@@ -164,7 +165,7 @@ def main():
                 train_steps += 1 / args.gradient_accumulation_steps
 
                 if (mb_train_index + 1) % args.gradient_accumulation_steps == 0:
-                    clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
+                    model.clip_grad_norm_(args.max_grad_norm)
                     optimizer.step()
                     scheduler.step()
                     optimizer.zero_grad()
@@ -174,7 +175,7 @@ def main():
             else:
                 train_steps += 1
                 mb_train_outputs.loss.backward()
-                clip_grad_norm_(model.parameters(), max_norm=args.max_grad_norm)
+                model.clip_grad_norm_(args.max_grad_norm)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
@@ -204,12 +205,11 @@ def main():
                     mb_valid_output_ids = valid_mb["labels"].to(rank)
 
                     with torch.no_grad():
-                        with torch.autocast("cuda", dtype=torch.bfloat16):
-                            mb_valid_outputs = model(
-                                input_ids=mb_valid_input_ids,
-                                labels=mb_valid_output_ids,
-                                use_cache=False,
-                            )
+                        mb_valid_outputs = model(
+                            input_ids=mb_valid_input_ids,
+                            labels=mb_valid_output_ids,
+                            use_cache=False,
+                        )
                         valid_loss += mb_valid_outputs.loss.item()
 
                     if (valid_step + 1) == args.eval_steps:
@@ -225,9 +225,11 @@ def main():
                 torch.cuda.empty_cache()
 
             if train_steps % args.save_steps == 0:
-                if dist.get_rank() == 0:
-                    model.module.save_pretrained(f"{args.save_dirpath}/{int(train_steps):09d}")
-                    tokenizer.save_pretrained(f"{args.save_dirpath}/{int(train_steps):09d}")
+                # NOTE: 추 후 구현
+                pass
+                # if dist.get_rank() == 0:
+                #     model.module.save_pretrained(f"{args.save_dirpath}/{int(train_steps):09d}")
+                #     tokenizer.save_pretrained(f"{args.save_dirpath}/{int(train_steps):09d}")
 
             if train_steps == args.training_steps:
                 break

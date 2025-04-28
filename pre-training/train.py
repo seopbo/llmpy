@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 
 import torch
+from datasets import load_dataset
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.checkpoint import checkpoint
 from torch.utils.data import DataLoader
@@ -12,8 +13,6 @@ from transformers import (
     DataCollatorForLanguageModeling,
 )
 from transformers.optimization import AdamW, get_cosine_with_min_lr_schedule_with_warmup
-
-from datasets import load_dataset
 
 
 def get_args():
