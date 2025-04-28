@@ -4,8 +4,14 @@ from dataclasses import dataclass
 from typing import List
 
 import torch
-from megatron.energon import (DefaultTaskEncoder, TextSample, WorkerConfig,
-                              batch_list, get_loader, get_train_dataset)
+from megatron.energon import (
+    DefaultTaskEncoder,
+    TextSample,
+    WorkerConfig,
+    batch_list,
+    get_loader,
+    get_train_dataset,
+)
 from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
@@ -55,14 +61,10 @@ class LanguageModelingTaskEncoderV1(
         self._buffer = []
 
     def encode_sample(self, sample: TextSample) -> LanguageModelingSample:
-        output = self._tokenizer(
-            sample.text, add_special_tokens=False, return_attention_mask=False
-        )
+        output = self._tokenizer(sample.text, add_special_tokens=False, return_attention_mask=False)
         return LanguageModelingSample(input_ids=output["input_ids"])
 
-    def select_samples_to_pack(
-        self, samples: List[LanguageModelingSample]
-    ) -> List[List[LanguageModelingSample]]:
+    def select_samples_to_pack(self, samples: List[LanguageModelingSample]) -> List[List[LanguageModelingSample]]:
         groups = []
         for sample in samples:
             input_ids = sample.input_ids + [self._tokenizer.eos_token_id]
@@ -74,9 +76,7 @@ class LanguageModelingTaskEncoderV1(
                 self._buffer = self._buffer[self._max_length :]
         return groups
 
-    def pack_selected_samples(
-        self, samples: List[LanguageModelingSample]
-    ) -> LanguageModelingSample:
+    def pack_selected_samples(self, samples: List[LanguageModelingSample]) -> LanguageModelingSample:
         return samples[0]
 
     def batch(self, samples: List[LanguageModelingSample]) -> LanguageModelingRawBatch:
@@ -86,9 +86,7 @@ class LanguageModelingTaskEncoderV1(
             actions={"input_ids": batch_list},
         )
 
-    def encode_batch(
-        self, batch_data: LanguageModelingRawBatch
-    ) -> LanguageModelingBatch:
+    def encode_batch(self, batch_data: LanguageModelingRawBatch) -> LanguageModelingBatch:
         input_ids = torch.tensor(batch_data.input_ids)
         attention_mask = torch.zeros_like(input_ids)
 
@@ -104,12 +102,10 @@ def get_args():
     parser.add_argument(
         "--energon_data_dirpath",
         type=str,
-        default="/data/nick_722/workspace/llmpy/tests/energon/kowiki",
     )
     parser.add_argument(
         "--pretrained_tokenizer_model_name_or_path",
         type=str,
-        default="/data/nick_722/hf_assets/llama-3.2-1b-instruct",
     )
     parser.add_argument("--max_sequence_length", type=int, default=8192)
     parser.add_argument("--batch_size", type=int, default=32)
@@ -121,9 +117,7 @@ def get_args():
 def main():
     args = get_args()
     simple_worker_config = WorkerConfig(rank=0, world_size=1, num_workers=4)
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.pretrained_tokenizer_model_name_or_path
-    )
+    tokenizer = AutoTokenizer.from_pretrained(args.pretrained_tokenizer_model_name_or_path)
     task_encoder = LanguageModelingTaskEncoderV1(
         tokenizer,
         max_length=args.max_sequence_length,
