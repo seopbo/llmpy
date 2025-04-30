@@ -14,11 +14,10 @@ def get_args():
 
 def main():
     args = get_args()
-    base_dirpath = Path(__file__).parent
-    lang_dirpath = base_dirpath / args.lang
+    input_dirpath = Path(__file__).parent / "datasets" / "wiki" / args.lang
 
     dataset = (
-        WebDataset(urls=f"{str(lang_dirpath)}/0000{{0..5}}.tar")  # 25 shards
+        WebDataset(urls=f"{str(input_dirpath)}/00000{{0..5}}.tar")  # 25 shards
         .decode()  # Automagically decode files
         .shuffle(size=1000)  # Shuffle on-the-fly in a buffer
         .batched(batchsize=1)  # Create batches
