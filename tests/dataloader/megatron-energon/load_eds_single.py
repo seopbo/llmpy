@@ -1,9 +1,10 @@
 import time
+import torch
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from typing import List
+from pathlib import Path
 
-import torch
 from megatron.energon import (
     DefaultTaskEncoder,
     TextSample,
@@ -36,7 +37,7 @@ class LanguageModelingBatch:
 
 
 # All the typing is optional
-class LanguageModelingTaskEncoderV1(
+class LanguageModelingTaskEncoderV2(
     DefaultTaskEncoder[
         TextSample,
         LanguageModelingSample,
@@ -60,14 +61,18 @@ class LanguageModelingTaskEncoderV1(
         self._reset_attention_mask = reset_attention_mask
         self._buffer = []
 
-    def encode_sample(self, sample: TextSample) -> LanguageModelingSample:
-        output = self._tokenizer(sample.text, add_special_tokens=False, return_attention_mask=False)
-        return LanguageModelingSample(input_ids=output["input_ids"])
+    def encode_sample(self, sample: TextSample) -> TextSample:
+        return sample
 
-    def select_samples_to_pack(self, samples: List[LanguageModelingSample]) -> List[List[LanguageModelingSample]]:
+    def select_samples_to_pack(self, samples: List[TextSample]) -> List[List[LanguageModelingSample]]:
+        list_of_texts = [sample.text for sample in samples]
+        outputs = self._tokenizer(list_of_texts, add_special_tokens=False, return_attention_mask=False)
+        list_of_input_ids = outputs["input_ids"]
+
         groups = []
-        for sample in samples:
-            input_ids = sample.input_ids + [self._tokenizer.eos_token_id]
+
+        for input_ids in list_of_input_ids:
+            input_ids += [self._tokenizer.eos_token_id]
             self._buffer.extend(input_ids)
 
             while len(self._buffer) >= self._max_length:
@@ -103,10 +108,6 @@ def get_args():
         "--eds_dirpath",
         type=str,
     )
-    parser.add_argument(
-        "--pretrained_tokenizer_model_name_or_path",
-        type=str,
-    )
     parser.add_argument("--max_sequence_length", type=int, default=8192)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--reset_attention_mask", action="store_true")
@@ -117,8 +118,9 @@ def get_args():
 def main():
     args = get_args()
     simple_worker_config = WorkerConfig(rank=0, world_size=1, num_workers=4)
-    tokenizer = AutoTokenizer.from_pretrained(args.pretrained_tokenizer_model_name_or_path)
-    task_encoder = LanguageModelingTaskEncoderV1(
+    pretrained_tokenizer_model_name_or_path = str(Path(__file__).parent.parent / "tokenizers" / "llama3")
+    tokenizer = AutoTokenizer.from_pretrained(pretrained_tokenizer_model_name_or_path)
+    task_encoder = LanguageModelingTaskEncoderV2(
         tokenizer,
         max_length=args.max_sequence_length,
         reset_attention_mask=args.reset_attention_mask,
