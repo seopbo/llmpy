@@ -36,7 +36,7 @@ class LanguageModelingBatch:
 
 
 # All the typing is optional
-class LanguageModelingTaskEncoderV1(
+class LanguageModelingTaskEncoderV2(
     DefaultTaskEncoder[
         TextSample,
         LanguageModelingSample,
@@ -60,14 +60,18 @@ class LanguageModelingTaskEncoderV1(
         self._reset_attention_mask = reset_attention_mask
         self._buffer = []
 
-    def encode_sample(self, sample: TextSample) -> LanguageModelingSample:
-        output = self._tokenizer(sample.text, add_special_tokens=False, return_attention_mask=False)
-        return LanguageModelingSample(input_ids=output["input_ids"])
+    def encode_sample(self, sample: TextSample) -> TextSample:
+        return sample
 
-    def select_samples_to_pack(self, samples: List[LanguageModelingSample]) -> List[List[LanguageModelingSample]]:
+    def select_samples_to_pack(self, samples: List[TextSample]) -> List[List[LanguageModelingSample]]:
+        list_of_texts = [sample.text for sample in samples]
+        outputs = self._tokenizer(list_of_texts, add_special_tokens=False, return_attention_mask=False)
+        list_of_input_ids = outputs["input_ids"]
+
         groups = []
-        for sample in samples:
-            input_ids = sample.input_ids + [self._tokenizer.eos_token_id]
+
+        for input_ids in list_of_input_ids:
+            input_ids += [self._tokenizer.eos_token_id]
             self._buffer.extend(input_ids)
 
             while len(self._buffer) >= self._max_length:
@@ -100,7 +104,7 @@ class LanguageModelingTaskEncoderV1(
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--energon_data_dirpath",
+        "--eds_dirpath",
         type=str,
     )
     parser.add_argument(
@@ -118,14 +122,14 @@ def main():
     args = get_args()
     simple_worker_config = WorkerConfig(rank=0, world_size=1, num_workers=4)
     tokenizer = AutoTokenizer.from_pretrained(args.pretrained_tokenizer_model_name_or_path)
-    task_encoder = LanguageModelingTaskEncoderV1(
+    task_encoder = LanguageModelingTaskEncoderV2(
         tokenizer,
         max_length=args.max_sequence_length,
         reset_attention_mask=args.reset_attention_mask,
     )
 
     train_ds = get_train_dataset(
-        args.energon_data_dirpath,
+        args.eds_dirpath,
         batch_size=args.batch_size,
         shuffle_buffer_size=None,
         max_samples_per_sequence=None,
